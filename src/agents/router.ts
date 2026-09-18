@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { pickRoute, type Route } from "../lib/pure.js";
+import { parseRouterReply, type Route } from "../lib/pure.js";
 
 const MODEL = process.env.MODEL ?? "claude-sonnet-5";
 
@@ -18,6 +18,5 @@ export async function classify(
     messages: [{ role: "user", content: task }],
   });
   const text = res.content.map((b) => (b.type === "text" ? b.text : "")).join(" ");
-  const [label, ...rest] = text.split("-");
-  return { route: pickRoute(label ?? text), rationale: rest.join("-").trim() || text.trim() };
+  return parseRouterReply(text);
 }

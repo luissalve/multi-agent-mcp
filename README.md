@@ -1,101 +1,112 @@
-![license](https://img.shields.io/badge/license-MIT-blue.svg) ![node](https://img.shields.io/badge/node-20%2B-green) ![lang](https://img.shields.io/badge/TypeScript-5.6-blue) ![status](https://img.shields.io/badge/status-demo--grade-orange) ![stack](https://img.shields.io/badge/stack-Anthropic%20Claude%20%7C%20MCP%20%7C%20tool--use-informational)
+# multi-agent-mcp
 
-# multi-agent-mcp — a 3-agent team coordinated over a custom MCP server
+A router, a research agent and a writer agent in TypeScript that share work only through tools on a custom Model Context Protocol (MCP) server.
 
-> Built by [Luis Monsalve](https://novaiflow.com) · NovAIFlow — Applied AI Engineer (Multi-Agent · MCP · Voice AI)
+By [Luis Monsalve](https://novaiflow.com). MIT licence.
 
-A **router → research → writer** agent pipeline, where the agents don't call ad-hoc functions — they call **tools exposed by a custom [Model Context Protocol](https://modelcontextprotocol.io) server**. The same MCP server could be mounted in Claude Desktop or ChatGPT; here it's driven by a local orchestrator so you can see the whole loop in one process.
+## Why this exists
 
-**Why this exists:** most "multi-agent" demos wire agents to each other with bespoke glue. That glue is exactly what MCP standardizes. This repo shows the pattern that survives production: agents are model-agnostic callers, capabilities live behind a versioned tool boundary (MCP), and the orchestrator only decides *who runs when*. Swap the transport from stdio to HTTP+OAuth and the same tools are consumable by any MCP client.
+Multi-agent demos often connect agents with ad-hoc function calls, which makes every capability hard to reuse or govern.
+Here every capability is a tool on one MCP server, and agents reach it only through `mcp.callTool(...)`.
+The same server runs standalone over stdio, so any stdio MCP client can mount the tools the agents use.
 
-## How it works
+## How one request flows
+
+This is the `research_heavy` path as `src/orchestrator.ts` runs it. Every Claude call is a plain `messages.create`; there is no model-driven tool loop yet.
 
 ```mermaid
-flowchart TD
-    Q[User task] --> O{Orchestrator}
-    O -->|1. classify| RT[Router agent]
-    RT -->|route decision| O
-    O -->|2. gather| RS[Research agent]
-    O -->|3. compose| WR[Writer agent]
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant O as Orchestrator
+    participant R as Router agent
+    participant RS as Research agent
+    participant W as Writer agent
+    participant C as Claude Messages API
+    participant M as MCP server (stdio)
 
-    subgraph MCP["Custom MCP server (tool boundary)"]
-        T1[[tool: web_lookup]]
-        T2[[tool: save_note]]
-        T3[[tool: list_notes]]
+    U->>O: npm run demo -- "task"
+    O->>M: spawn tsx src/mcp-server.ts and initialize
+    O->>R: classify(client, task)
+    R->>C: messages.create (routing prompt)
+    C-->>R: "research_heavy - needs current facts"
+    R-->>O: route and rationale via parseRouterReply()
+    alt route is research_heavy
+        O->>RS: research(client, mcp, task)
+        RS->>C: messages.create (write one search query)
+        C-->>RS: query
+        RS->>M: callTool web_lookup { query }
+        M-->>RS: stubbed result text
+        RS->>C: messages.create (distill 2 to 4 bullet points)
+        C-->>RS: note
+        RS->>M: callTool save_note { note }
+    else route is direct or creative
+        O->>M: callTool save_note { fixed "answered from general knowledge" note }
     end
-
-    RS -.calls.-> T1
-    RS -.calls.-> T2
-    WR -.reads via.-> T3
-    WR --> A[Final answer]
+    O->>W: write(client, mcp, task)
+    W->>M: callTool list_notes {}
+    M-->>W: saved notes
+    W->>C: messages.create (answer grounded only in the notes)
+    C-->>W: answer
+    W-->>O: answer
+    O-->>U: print the answer
+    O->>M: close
 ```
 
-- **Orchestrator** (`src/orchestrator.ts`) owns control flow only: it runs the router, then research, then writer. It holds no domain logic.
-- **Router agent** classifies the task and returns a structured route (`research_heavy` | `direct` | `creative`) — a pure decision the orchestrator acts on.
-- **Research agent** is allowed to call MCP tools (`web_lookup`, `save_note`) to gather grounded material.
-- **Writer agent** reads the notes the researcher saved and composes the final answer.
-- **The MCP server** (`src/mcp-server.ts`) is the one place tools are defined. Agents never import tool code directly — they call it across the MCP boundary, exactly as an external client (Claude, ChatGPT) would.
-
-## Why MCP matters here (the differentiator)
-
-MCP is the emerging standard for letting an LLM *act* — call tools, read resources — behind an authenticated, versioned boundary instead of hand-rolled function calls. Building agents **on top of a real MCP server** (rather than raw function dispatch) means:
-
-- the same tools work from your orchestrator **and** from Claude Desktop / ChatGPT with zero rewrite;
-- capabilities are versioned and permissioned at one boundary (add OAuth 2.1 for remote);
-- you can reason about, log, and rate-limit every action in one place.
-
-This is production-grade MCP work as a public reference — the pattern behind shipping remote MCP OAuth 2.1 connectors, shown here without any private/client code.
-
 ## Quickstart
+
+Requires Node 20 or later.
 
 ```bash
 git clone https://github.com/luissalve/multi-agent-mcp
 cd multi-agent-mcp
-cp .env.example .env      # add ANTHROPIC_API_KEY
 npm install
 
-# run the orchestrated 3-agent pipeline on a task
-npm run demo -- "Summarize the tradeoffs of RAG vs long-context for support bots"
+npm test             # vitest run: offline, no API key needed
+npm run typecheck    # tsc --noEmit
 
-# or run the MCP server standalone (mount it in an MCP client)
-npm run mcp
+cp .env.example .env # then set ANTHROPIC_API_KEY in .env
+npm run demo -- "Summarize the tradeoffs of RAG vs long context for support bots"
+npm run mcp          # the MCP server on its own, over stdio
 ```
 
-## Environment variables
+`npm run demo` needs ANTHROPIC_API_KEY. MODEL is optional and defaults to `claude-sonnet-5`. `.env.example` also lists MCP_TRANSPORT, which no code reads yet (see the roadmap).
 
-| Variable | Required | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | yes | Claude API key used by all three agents |
-| `MODEL` | no (default `claude-sonnet-5`) | Model id for the agents |
-| `MCP_TRANSPORT` | no (default `stdio`) | `stdio` for local; `http` is the production/remote path (see ARCHITECTURE) |
+## What to look at
 
-Copy `.env.example` to `.env` and fill real values — never commit `.env`.
+- [`src/mcp-server.ts`](src/mcp-server.ts): the entire tool boundary, with three tools, zod-validated arguments and one note store per server instance.
+- [`src/agents/research.ts`](src/agents/research.ts): the agent that crosses the MCP boundary. It runs a fixed single pass (plan, look up, distill, save), not a loop where Claude picks the tools.
+- [`tests/mcp-server.test.ts`](tests/mcp-server.test.ts): drives the real server through an in-memory MCP transport, so argument validation is tested end to end without a network.
 
-## Demo scope / roadmap — real vs. simplified
+## Design decisions
 
-This is a **v1 scaffold** that proves the architecture, not a hardened product. Honestly:
+- **Tools live only in the MCP server.** The research and writer agents call `mcp.callTool`, and the orchestrator adds one `save_note` call for non-research routes. No agent imports tool code.
+- **The router's free text is mapped to a closed set of routes.** `parseRouterReply` in `src/lib/pure.ts` takes the first route keyword before the separator and defaults to `direct`, so a noisy reply cannot produce an invalid route.
+- **Tool arguments are validated at the boundary.** The zod schemas in `src/lib/tool-schemas.ts` trim input, reject empty strings and cap length above what the agents can emit. The SDK rejects a bad call with an `isError` result before any handler runs, and clients see the bounds in `tools/list`.
+- **SDK clients are passed in, not created inside agents.** `classify(client, task)` and `research(client, mcp, task)` take their clients as parameters, so tests use a fake Anthropic client and an in-memory MCP transport instead of paid API calls.
+- **Control flow is linear and lives in one file.** The orchestrator only sequences the agents. The server writes its logs to stderr so they never corrupt the JSON-RPC stream on stdout.
 
-**Real / wired to a real integration point:**
-- A working MCP server (`@modelcontextprotocol/sdk`) exposing three tools (`web_lookup`, `save_note`, `list_notes`) over stdio.
-- An orchestrator that runs router → research → writer using the Anthropic SDK's tool-use loop.
-- A clean agent boundary: agents call tools through MCP, not direct imports.
+## Status & roadmap
 
-**Out of scope for v1 (explicitly not attempted):**
-- Real web search behind `web_lookup` — it returns a stubbed result with a clear TODO (swap in a search API).
-- Remote transport + **OAuth 2.1** authentication (the production path; noted in ARCHITECTURE, not implemented here).
-- Persistence beyond an in-memory note store, retries, cost accounting, and observability (see [`ai-engineering-cookbook`](https://github.com/luissalve/ai-engineering-cookbook)'s `observability` recipe).
-- Parallel/graph agent execution — this is a linear pipeline on purpose.
+This is a v1 scaffold, not a hardened product. What runs today is the pipeline above, the stdio MCP server with validated arguments, and an offline test suite.
 
-A production version of this pattern — remote MCP with OAuth 2.1, many tools, operating against live business data — has been built for a client under NDA. Ask for a live walkthrough in an interview.
+Known limitations:
 
-## Tests
+- `web_lookup` returns a stubbed string. No search provider is wired in.
+- Notes live in memory for the life of one server process.
+- Agents read tool results as text and do not yet check the `isError` flag.
+- `redactSecrets` exists in `src/lib/pure.ts` but nothing logs tool I/O through it yet.
 
-```bash
-npm test
-```
+Next commits, detailed in [CHANGELOG-PROPOSAL.md](CHANGELOG-PROPOSAL.md):
 
-One real unit test covers the pure route-selection helper in `src/lib/pure.ts`. Starting point, not a coverage claim.
+1. `test(router,mcp)`: route-selection tests and bounded tool argument validation. Done in this revision.
+2. `fix(mcp)`: start the server when run directly on Windows. Done in this revision.
+3. `fix(agents)`: fail loudly when an MCP tool call returns `isError`. Planned.
+4. `feat(research)`: let Claude choose MCP tools in a bounded tool-use loop. Planned.
+5. `feat(mcp)`: serve the same tools over Streamable HTTP when MCP_TRANSPORT is `http`. Planned. OAuth 2.1 for remote clients stays planned after that.
 
-## License
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the component map.
 
-MIT — see [LICENSE](LICENSE).
+## Licence
+
+MIT. See [LICENSE](LICENSE).
