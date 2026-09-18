@@ -1,0 +1,29 @@
+{
+  "name": "multi-agent-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A router -> research -> writer agent pipeline coordinated over a custom Model Context Protocol server.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Luis Monsalve <hello@novaiflow.com> (https://novaiflow.com)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "demo": "tsx src/orchestrator.ts",
+    "mcp": "tsx src/mcp-server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "dotenv": "^16.4.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
